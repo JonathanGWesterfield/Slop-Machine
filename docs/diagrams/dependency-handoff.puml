@@ -1,0 +1,76 @@
+@startuml dependency-handoff
+!include state-machine-style.iuml
+title Slop Machine | Scope blocker and durable dependency handoff
+
+state "Contain scope drift\nStop/fence implementation\nKeep only handoff actions permitted" as Contain
+state OriginalTracking <<choice>>
+state "Establish original Jira ticket for prompt task\nCreate or reconcile by stable origin identity\nPreserve request, clarifications, scope + work history\nVerify link to internal task before prerequisite" as PromotePrompt
+state "Record bounded proposal\nProblem, evidence, scope boundary,\nsolution, criteria and exclusions" as Proposal
+state "Create or find prerequisite ticket\nReconcile by operation identity\nCheck duplicates and dependency cycles" as Prerequisite
+state HasChanges <<choice>>
+state "Preserve task changes\nCommit to dedicated task branch\nPush + verify exact remote commit" as Preserve
+state "Record unchanged base\nNo dummy commit needed" as Base
+state "Link + update original ticket\nBlocked by prerequisite; branch/commit;\ncompleted work, remaining work, checks" as Update
+state "Confirm handoff\nVerify original + prerequisite links and remote work\nMark original ticket blocked; sync internal task if present" as Confirm
+state "Blocked and preserved\nEnd old run; stop sessions; release slot" as Blocked <<blocked>>
+state "Reconcile failed/unknown step\nInspect Jira and remote state\nNever blindly recreate or repush" as Reconcile <<attention>>
+state "Resume first incomplete step\nDispatch only after fresh checks" as Resume
+state "Handoff incomplete\nImplementation remains stopped\nPersist recovery action; end run" as Incomplete <<attention>>
+
+[*] --> Contain
+Contain --> OriginalTracking : implementation stopped/fenced
+OriginalTracking --> Proposal : [original Jira ticket linked]
+OriginalTracking --> PromotePrompt : [prompt-only; internal tracking]
+PromotePrompt --> Proposal : original Jira ticket + internal link verified
+PromotePrompt --> Reconcile : failed or ambiguous original-ticket creation
+Proposal --> Prerequisite : proposal recorded; policy permits
+Prerequisite --> HasChanges : ticket verified; no cycle
+HasChanges --> Preserve : [task has code changes]
+HasChanges --> Base : [no changes]
+Preserve --> Update : remote commit verified
+Base --> Update : base evidence recorded
+Update --> Confirm : dependency + handoff details verified
+Confirm --> Blocked : all steps confirmed
+Prerequisite --> Reconcile : failed or ambiguous outcome
+Preserve --> Reconcile : failed or ambiguous outcome
+Update --> Reconcile : failed or ambiguous outcome
+Confirm --> Reconcile : incomplete confirmation
+Reconcile --> Resume : retry permitted; outcome known\nand recovery budget remains
+Resume --> Prerequisite : [prerequisite step incomplete]
+Resume --> PromotePrompt : [original-ticket step incomplete]
+Resume --> Preserve : [preservation step incomplete]
+Resume --> Update : [ticket-link/update step incomplete]
+Resume --> Confirm : [confirmation step incomplete]
+Reconcile --> Incomplete : unresolved effects, permission failure,\ncycle, or exhausted recovery
+Prerequisite --> Incomplete : dependency cycle cannot be resolved
+Blocked --> [*] : return dependency_blocked
+Incomplete --> [*] : return attention
+
+note right of Preserve
+  Preservation is not approved delivery.
+  Incomplete or failing code is labeled as such.
+  Publish only this task's intended files;
+  never main, credentials, or unrelated work.
+end note
+note bottom of Blocked
+  No arrow back into the old implementation loop.
+  After the prerequisite is resolved, the scheduler may create a NEW run.
+  New preflight verifies the fix in current code and reconciles preserved work.
+  New implementer/reviewer sessions; new checks and new approval.
+end note
+note left of Reconcile
+  Each side effect has its own operation ID.
+  Track step outcomes independently.
+  Redelivery must not duplicate tickets.
+  Stop implementation even if Jira is unavailable.
+end note
+note left of PromotePrompt
+  A prompt can start without a user-written ticket.
+  FR-10 requires an original Jira ticket to block and link;
+  promotion is conditional, only when a prompt-only task
+  reaches this handoff. Do not create the prerequisite until
+  original-ticket creation and origin linkage are confirmed.
+  Ambiguous creation is reconciled before retry to avoid duplicates.
+  The task retains its prompt origin and internal task ID.
+end note
+@enduml

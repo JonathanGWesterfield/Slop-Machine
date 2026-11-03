@@ -1,0 +1,67 @@
+@startuml access-readiness
+!include state-machine-style.iuml
+title Slop Machine | Selected access and container credential startup (FR-06)
+caption Pre-claim readiness holds no secret. Every task container pulls the current selected credential when it starts.
+
+state Entry <<choice>>
+state "Read explicit access selection\nAPI or supported subscription; role models\nCredential reference only, never secret bytes" as Config
+state "Check provider compatibility\nSelected mode, account, models, capabilities\nRequired evaluator and local budgets" as Precheck
+state "Admission ready\nSelected mode/config recorded\nNo token fetched and no slot held" as AdmissionReady <<success>>
+
+state "Start task container\nVerify run-bound identity and selected mode\nNew run or replacement for same run" as Start
+state "Authenticate to credential manager\nRun-bound, read-only identity\nNo copied auth cache or embedded token" as StoreAuth
+state "Fetch current access credential\nAPI credential or subscription access token\nRead version and issuer expiry when applicable" as Fetch
+state Credential <<choice>>
+state "Wait for current credential\nCentral auth owner refreshes/publishes if needed\nBounded wait; worker cannot refresh upstream" as WaitCredential
+state "Initialize selected agent runtime\nUse fetched credential for supported mode\nVerify authentication and model access" as Initialize
+state "Record credential readiness\nMode, version, expiry/recheck basis and evidence\nNever persist secret bytes" as Record
+state "Container ready\nContinue this run at verified workflow boundary" as Ready <<success>>
+
+state "Pause affected model work\nClassify in-flight outcome through operation guardrails\nNo blind replay of tools or model effects" as Recover
+state "Needs attention\nCredential unavailable, expired, unsupported\nor selected account/usage blocked" as Attention <<attention>>
+
+[*] --> Entry
+Entry --> Config : [preclaim_check]
+Entry --> Start : [worker_start or replacement_start]
+Entry --> Recover : [auth_failure_during_run]
+Config --> Precheck : selection and credential reference valid
+Config --> Attention : missing/invalid selection or reference
+Precheck --> AdmissionReady : selected mode and capabilities supported;\nknown limits/budgets permit
+Precheck --> Attention : setup, entitlement, model, capability\nor usage readiness blocked
+AdmissionReady --> [*] : return admission_ready
+
+Start --> StoreAuth : current run identity verified
+Start --> Attention : run identity or selected mode mismatch
+Recover --> StoreAuth : prior operation reconciled;\nworkflow boundary verified
+Recover --> Attention : in-flight effect or boundary unresolved
+StoreAuth --> Fetch : manager read authorized for this run
+StoreAuth --> Attention : manager unavailable or reader denied\nafter bounded recovery
+Fetch --> Credential : selected credential and metadata returned
+Fetch --> WaitCredential : absent, stale or read temporarily unavailable
+Credential --> Initialize : [current for selected mode; expiry valid]
+Credential --> WaitCredential : [expired, wrong mode or version stale]
+WaitCredential --> Fetch : central owner published current version;\nretry within deadline
+WaitCredential --> Attention : deadline or recovery budget exhausted
+Initialize --> Record : selected runtime authenticates and model is usable
+Initialize --> WaitCredential : authentication rejected due to stale token;\nnew version may be published
+Initialize --> Attention : unsupported integration, entitlement\nor non-retryable authentication/usage failure
+Record --> Ready : secret-free evidence persisted
+Record --> Attention : readiness record unconfirmed
+Ready --> [*] : return container_ready
+Attention --> [*] : return attention
+
+note right of Fetch
+  The worker reads the CURRENT credential at EVERY container start,
+  including a replacement container for an interrupted run.
+  API mode may use a static API key; subscription mode needs a
+  supported worker-usable access token. OpenBao is the preferred
+  credential manager behind a replaceable adapter.
+  A worker never reads the renewable login or auth.json.
+end note
+note bottom of Ready
+  The selected mode never silently switches to billable API access.
+  Startup must finish before agent work or Jira work-start update.
+  Re-entry after a crash uses process-restart-recovery.puml:
+  same run only at a verified checkpoint, with fresh role sessions.
+end note
+@enduml

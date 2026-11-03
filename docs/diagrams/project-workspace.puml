@@ -1,0 +1,84 @@
+@startuml project-workspace
+!include state-machine-style.iuml
+title Slop Machine | Per-run Docker volume and full-clone lifecycle (FR-07)
+caption A new run gets a new volume and independent clone; an interrupted SAME run recovers its existing volume.
+
+state Entry <<choice>>
+state "Resolve configured project\nTask project -> repository identity\nConfigured remote and target branch" as Resolve
+state "Verify repository access and identity\nRead target branch/commit and project guidance\nExpose resolved target to the user" as Inspect
+state "Repository resolved\nReturn configuration revision + target snapshot" as Resolved <<success>>
+
+state "Verify claim and prior task ownership\nTask/run IDs, repository + target revision\nPrior run closed or explicitly blocked" as Claim
+state "Reserve unique Docker volume + branch\nPersist creation intent, run/ticket IDs and lease\nNo agent chooses isolation" as Reserve
+state BranchSource <<choice>>
+state "Create named volume and full clone\nStart task branch at verified target commit\nMount only into this run's container" as Clone
+state "Create named volume and full clone\nFetch verified saved remote branch\nFor NEW run after review/dependency" as Saved
+state "Verify volume and clone\nDB reference, Docker identity/labels and manifest agree\nOrigin, branch, HEAD, lease and expected files" as Verify
+state "Workspace ready for run\nPersist volume ID, branch, commit and manifest\nCaller may start container, then Jira/preflight" as Ready <<success>>
+
+state "Recheck mounted clone before code\nAccepted spec, target/base, volume lease\nBranch/HEAD and expected manifest" as BeforeCode
+state "Code workspace ready\nPermit bounded agent assignments" as CodeReady <<success>>
+state "Repeat preflight\nTask/target inputs moved" as Recheck <<attention>>
+
+state "Inspect volume at run end\nAll executors stopped/fenced\nCheck committed, staged, untracked and ignored task data" as EndInspect
+state "Remove safe run volume\nAll necessary work published or durably preserved\nVerify Docker removal and journal disposition" as Remove
+state "Retain run volume for recovery\nPersist complete state manifest and owner\nBlock same-task new run until reconciled" as Retain
+state "Volume retired" as Retired <<success>>
+state "Volume retained under task ownership" as Retained <<attention>>
+state "Cleanup incomplete\nWriter/volume/effects unresolved\nKeep claim and slot until safe" as CleanupPending <<attention>>
+state "Needs attention\nMissing mapping, unsafe ownership or clone failure" as Attention <<attention>>
+
+[*] --> Entry
+Entry --> Resolve : [resolve_for_admission]
+Entry --> Claim : [create_for_run; claim + slot persisted]
+Entry --> BeforeCode : [verify_for_code]
+Entry --> EndInspect : [end_run]
+Resolve --> Inspect : one explicit configured repository found
+Resolve --> Attention : missing/ambiguous mapping or target
+Inspect --> Resolved : identity, access and target verified
+Inspect --> Attention : wrong repository or inaccessible inputs
+Resolved --> [*] : return repository_ready
+Claim --> Reserve : current owner; prior run reconciled
+Claim --> Attention : stale claim or prior run unresolved
+Reserve --> BranchSource : unique volume ID/lease + intent persisted
+Reserve --> Attention : conflict or ambiguous creation / reconcile first
+BranchSource --> Clone : [no saved remote branch]
+BranchSource --> Saved : [verified saved remote branch]
+Clone --> Verify : clone and checkout returned
+Saved --> Verify : clone and checkout returned
+Clone --> Attention : clone failed or effect ambiguous / inspect volume
+Saved --> Attention : saved ref missing or effect ambiguous
+Verify --> Ready : DB, Docker, manifest and Git evidence match
+Verify --> Attention : mismatch, unexpected files or lease conflict
+Ready --> [*] : return workspace_ready
+BeforeCode --> CodeReady : spec and volume/clone evidence current
+BeforeCode --> Recheck : task or target/base changed
+BeforeCode --> Attention : volume missing, shared or unexpectedly changed
+CodeReady --> [*] : return code_workspace_ready
+Recheck --> [*] : return recheck_preflight
+EndInspect --> Remove : clean or all changes published/preserved
+EndInspect --> Retain : dirty state captured; owner fenced
+EndInspect --> CleanupPending : cannot fence, classify or capture
+Remove --> Retired : removal confirmed
+Remove --> CleanupPending : removal uncertain / reconcile first
+Retain --> Retained : manifest + recovery block persisted
+Retain --> CleanupPending : retention unconfirmed
+CleanupPending --> EndInspect : bounded reconciliation restores certainty
+Retired --> [*] : return volume_retired
+Retained --> [*] : return volume_retained
+Attention --> [*] : return attention
+
+note right of Verify
+  The volume is persistent Docker storage on this host,
+  independent of the disposable task container layer.
+  Database identity is authoritative; Docker labels and
+  the volume manifest corroborate it. No match, no mount.
+end note
+note bottom of Retained
+  Same-run recovery remounts this exact volume only after
+  fencing and checkpoint/effect reconciliation. A later NEW
+  run gets a NEW volume and clones a verified saved remote
+  branch; it never inherits the old container or sessions.
+  A volume on this host does not protect against disk loss.
+end note
+@enduml

@@ -1,0 +1,85 @@
+@startuml role-session
+!include state-machine-style.iuml
+title Slop Machine | Role sessions within one run (FR-04 / FR-05)
+caption Invoke selection separately for each role and pass; run cleanup closes both roles.
+
+state Entry <<choice>>
+state "Validate pass request\nActive task/run; role and assignment identity\nEffective role model + session policy" as Validate
+state "Assemble explicit context\nTask/spec, project instructions + design, code\nChecks, unresolved findings + repair responses" as Context
+state SessionChoice <<choice>>
+state "Verify reusable session\nSame task, run and role; model matches\nPrevious invocation ended; no concurrent pass" as Reuse
+state "Retire previous session for this role\nStop/fence executor; save messages + usage\nRevoke session reference" as Retire
+state "Create fresh role session\nNew session ID; configured role model\nNo prior conversation history" as Fresh
+state "Evaluate outbound role handoff\nExact context manifest and feedback scope\nSee output-handoff-policy.puml" as HandoffGate
+state "Deliver bounded assignment + context\nRecord exact context manifest and feedback refs\nVerify adapter accepted handoff" as Supply
+state "Session ready for this pass\nReturn role/session/assignment identity" as Ready <<success>>
+state "Needs attention\nInvalid context/config, identity or session failure" as Attention <<attention>>
+state "Scope blocker\nConfirmed necessary work outside task spec" as ScopeBlock <<blocked>>
+
+state "Close every session in this run\nStop/fence both roles and partial launches\nBlock new assignments and late-result transitions" as StopAll
+state "Persist session endings\nMessages, findings, work references + usage\nRecord unavailable capture explicitly" as RecordEnds
+state "Revoke all run session references\nPreserve task evidence outside conversations" as Revoke
+state "Sessions closed\nCaller may finish outcome and release slot" as Closed <<success>>
+state "Cleanup incomplete\nKeep slot reserved; expose recovery action\nNo new assignments" as CleanupPending <<attention>>
+
+[*] --> Entry
+Entry --> Validate : [select_for_pass]
+Entry --> StopAll : [end_run; any outcome]
+Validate --> Context : request valid; budget and permissions allow
+Validate --> Attention : invalid, unsupported or stopped run
+Context --> SessionChoice : required artifacts available and current
+Context --> Attention : missing, contradictory or oversized required context
+SessionChoice --> Fresh : [first pass for this role in this run]
+SessionChoice --> Reuse : [later pass; reuse_within_run]
+SessionChoice --> Retire : [later pass; fresh_per_pass]
+Reuse --> HandoffGate : identity/config match; prior invocation terminal
+Reuse --> Attention : missing, mismatched or still-active session
+Retire --> Fresh : old session stopped/fenced; ending recorded
+Retire --> Attention : retirement unconfirmed / caller closes run
+Fresh --> HandoffGate : creation confirmed; model verified under configured policy
+Fresh --> Attention : launch/auth/model failure / caller closes partial sessions
+HandoffGate --> Supply : exact handoff allowed by policy
+HandoffGate --> ScopeBlock : necessary extra work confirmed
+HandoffGate --> Attention : correction, clarification, check failure\nor uncertain effects / caller records finding
+Supply --> Ready : assignment accepted; session/context event recorded
+Supply --> Attention : delivery unconfirmed after bounded reconciliation
+Ready --> [*] : return session_ready
+Attention --> [*] : return attention; caller invokes end_run cleanup
+ScopeBlock --> [*] : return scope_blocked; caller invokes FR-10 handoff
+StopAll --> RecordEnds : all executors stopped/fenced
+StopAll --> CleanupPending : any executor cannot be stopped/fenced
+RecordEnds --> Revoke : endings and evidence references persisted
+RecordEnds --> CleanupPending : persistence unconfirmed
+Revoke --> Closed : references revoked; no reuse in a later run
+Revoke --> CleanupPending : revocation unconfirmed
+CleanupPending --> StopAll : bounded recovery or explicit recovery action
+Closed --> [*] : return sessions_closed
+
+note right of SessionChoice
+  Read only the requested role's independent setting.
+  All four implementer/reviewer policy combinations work.
+  Every NEW run starts with no reusable sessions,
+  including human-feedback and prerequisite pickups.
+  Preflight-only closure creates no coding sessions.
+end note
+note right of Supply
+  Both roles receive the same task/spec identity.
+  Reviewer context includes actual immutable changes,
+  design and validation, not only an implementer summary.
+  Fresh repair sessions receive stable finding IDs,
+  current work and responses without another role's history.
+  Reused sessions also receive current explicit context.
+end note
+note bottom of Ready
+  The caller executes and records the pass before another assignment.
+  A check failure or review finding starts a new pass through this selector.
+  Retrying delivery of one assignment does not create a second invocation.
+  No silent model, access-mode or session-policy substitution on failure.
+end note
+note bottom of StopAll
+  All run exits use cleanup: completion, review wait, dependency block,
+  clarification, cancellation and failure. Zero-session cleanup is valid.
+  Run stop/cancellation during selection also enters StopAll.
+  Logical fencing must prevent further effects before a slot is released.
+end note
+@enduml

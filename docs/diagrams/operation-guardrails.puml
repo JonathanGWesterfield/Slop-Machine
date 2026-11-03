@@ -1,0 +1,77 @@
+@startuml operation-guardrails
+!include state-machine-style.iuml
+title Slop Machine | Guarded command delivery and recovery
+caption Shared by task mutations, agent assignments, checks, handoffs and publication.
+
+state "Command proposed\nJSON envelope + typed payload\nOperation ID + exact input references" as Proposed
+state "Validate command\nSchema, producer, run ownership,\npreconditions, deadline and budget" as Validate
+state "Evaluate applicable policies\nVersioned modular policies\nNeMo preferred integration" as Policy
+state Decision <<choice>>
+state "Record accepted operation\nDurable outbox / journal intent" as Accepted
+state "Claim dispatch + recheck\nOwnership, freshness and policy binding" as Dispatch
+state "Execute bounded action\nStream messages, tools and usage" as Execute
+state "Verify and record result\nCorrelation, snapshot, side effects\nFreshness before state transition" as Verify
+state "Completed\nReturn typed result to caller" as Completed <<success>>
+state "Reconcile outcome\nInspect existing side effects\nStop/fence abandoned executor" as Reconcile <<attention>>
+state "Backoff / wait for readiness\nRate limit, auth or provider recovery\nBounded deadline and attempt count" as Backoff
+state "Rejected / attention\nNo implicit permission on failure" as Rejected <<attention>>
+state "Scope blocker\nOnly bounded handoff may proceed" as ScopeBlock <<blocked>>
+state "Stop / cancel operation\nRecord partial or unknown effects" as Stop
+state "Cancelled\nLate results retained as evidence only" as Cancelled <<attention>>
+
+[*] --> Proposed
+Proposed --> Validate
+Validate --> Policy : structurally and contextually valid
+Validate --> Rejected : malformed, stale, unauthorized,\nexpired, or budget exhausted
+Policy --> Decision : evaluation completed
+Decision --> Accepted : [allow]
+Decision --> ScopeBlock : [confirmed necessary out-of-scope work]
+Decision --> Rejected : [other block or clarification required]
+Policy --> Backoff : evaluation unavailable; retry permitted\n/ do not execute
+Accepted --> Dispatch
+Dispatch --> Execute : no prior completion; execution claim current
+Dispatch --> Verify : existing result / deduplicate delivery
+Dispatch --> Reconcile : prior attempt outcome unknown
+Dispatch --> Rejected : preconditions no longer valid
+Execute --> Verify : response or completion observed
+Execute --> Reconcile : timeout, crash, or ambiguous external effect
+Verify --> Completed : valid completed domain result recorded
+Verify --> Backoff : confirmed retryable failure;\nno ambiguous effects; retry budget remains
+Verify --> Rejected : confirmed non-retryable operation failure
+Verify --> Reconcile : outcome cannot be confirmed
+Verify --> Rejected : stale or conflicting terminal result
+Reconcile --> Verify : completed effect found
+Reconcile --> Backoff : safe to retry; executor stopped/fenced;\nretry budget remains
+Reconcile --> Rejected : unsafe retry or exhausted recovery
+Backoff --> Validate : readiness restored / revalidate same operation
+Backoff --> Rejected : deadline/recovery budget exceeded
+Execute --> Stop : cancellation or hard limit
+Backoff --> Stop : cancellation
+Dispatch --> Stop : cancellation before execution
+Stop --> Cancelled : executor stopped/fenced; effects recorded
+Completed --> [*]
+Rejected --> [*]
+ScopeBlock --> [*]
+Cancelled --> [*]
+
+note right of Verify
+  Execution completed is not domain approval:
+  a completed review may request changes;
+  a completed test may fail.
+  The calling task state decides the next stage.
+end note
+note left of Dispatch
+  Stable operation/message IDs across redelivery.
+  A new repair assignment gets a NEW operation ID.
+  At-least-once delivery; reconcile external effects.
+  A record of acceptance is not proof of completion.
+end note
+note bottom of Execute
+  Only intercepted tool calls can be blocked before execution.
+  Record observed-only / unavailable enforcement explicitly.
+  Every event carries task/run/session/operation correlation where applicable.
+  Deterministic permissions remain enforced outside model judgment.
+  Agent plans, results and role handoffs use output-handoff-policy.puml;
+  this command gate alone does not contain output drift.
+end note
+@enduml

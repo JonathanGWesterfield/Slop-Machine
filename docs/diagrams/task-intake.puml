@@ -1,0 +1,66 @@
+@startuml task-intake
+!include state-machine-style.iuml
+title Slop Machine | Task intake (FR-01 and FR-02)
+caption Intake records an actionable task before it enters the scheduler queue. It holds no execution slot.
+
+state Source <<choice>>
+state "Query configured Jira backlog\nOr look up selected ticket key" as QueryJira
+state "Select candidate ticket\nApply configured selection policy" as SelectTicket
+state "Fetch Jira ticket\nRequirements, acceptance criteria, ID + revision" as FetchTicket
+state "Record Jira-backed task\nPersist ticket link + source evidence" as RecordJira
+state "Capture user prompt\nOriginal text + target project" as CapturePrompt
+state "Assess prompt actionability\nPreserve prior clarifications" as AssessPrompt
+state PromptDecision <<choice>>
+state "Ask for missing information\nRecord question + task identity" as Ask
+state "Await clarification\nNo slot or agent session" as WaitReply <<attention>>
+state TrackingMode <<choice>>
+state "Create Jira ticket from prompt\nVerify new key + link to request" as CreateTicket
+state "Record prompt task\nInternal record or linked Jira ticket\nPreserve original request + answers" as RecordPrompt
+state "Load existing task\nHuman review reply or explicit requeue" as ExistingTask
+state "Ready to queue\nSource + project + tracking record saved" as Ready <<success>>
+state "Idle intake\nNo eligible Jira candidate yet" as Idle
+state "Needs attention\nRead/create failure or missing tracking policy" as Attention <<attention>>
+state "Cancelled\nPrompt retained; no run started" as Cancelled <<attention>>
+
+[*] --> Source
+Source --> QueryJira : [Jira backlog or selected key]
+Source --> CapturePrompt : [new user prompt]
+Source --> ExistingTask : [existing task requeued]
+QueryJira --> SelectTicket : candidate refs returned
+QueryJira --> Idle : no candidate
+QueryJira --> Attention : Jira read failed after recovery
+SelectTicket --> FetchTicket : candidate chosen
+FetchTicket --> RecordJira : ticket ID, revision + content captured
+FetchTicket --> Attention : fetch failed after recovery
+RecordJira --> Ready : task/ticket link persisted
+CapturePrompt --> AssessPrompt : original request + project recorded
+AssessPrompt --> PromptDecision : actionability assessed
+PromptDecision --> Ask : [missing or conflicting information]
+PromptDecision --> TrackingMode : [actionable]
+Ask --> WaitReply : clarification request recorded
+WaitReply --> AssessPrompt : reply received / append answer
+WaitReply --> Cancelled : user cancels
+TrackingMode --> CreateTicket : [configured Jira tracking]
+TrackingMode --> RecordPrompt : [configured internal tracking]
+TrackingMode --> Attention : no valid tracking policy
+CreateTicket --> RecordPrompt : ticket created + linked + verified
+CreateTicket --> Attention : creation unconfirmed after recovery
+RecordPrompt --> Ready : tracking record verified
+ExistingTask --> Ready : cause + task identity loaded
+Idle --> [*] : return idle; retry on new input
+Ready --> [*] : return queue_ready
+Attention --> [*] : return attention
+Cancelled --> [*] : return cancelled
+
+note right of TrackingMode
+  Prompt-to-ticket conversion before normal execution is optional
+  under an explicit tracking policy. A prompt kept internally must
+  acquire a linked original Jira ticket if FR-10 handoff is needed.
+  See dependency-handoff.puml; preserve the original prompt origin.
+end note
+note bottom of WaitReply
+  Clarifications append to the original request.
+  Silence cannot make a prompt actionable.
+  Timeout/escalation policy remains to be defined.
+end note
+@enduml

@@ -1,0 +1,30 @@
+!pragma layout smetana
+hide empty description
+skinparam backgroundColor #F8FAFC
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 14
+skinparam ArrowColor #475569
+skinparam ArrowFontSize 12
+skinparam ArrowThickness 1.3
+skinparam nodesep 40
+skinparam ranksep 45
+skinparam state {
+  BackgroundColor #FFFFFF
+  BorderColor #64748B
+  FontColor #0F172A
+  RoundCorner 16
+  BackgroundColor<<success>> #DCFCE7
+  BorderColor<<success>> #15803D
+  BackgroundColor<<attention>> #FEF3C7
+  BorderColor<<attention>> #B45309
+  BackgroundColor<<blocked>> #FEE2E2
+  BorderColor<<blocked>> #B91C1C
+  BackgroundColor<<optional>> #EDE9FE
+  BorderColor<<optional>> #7C3AED
+}
+skinparam note {
+  BackgroundColor #EFF6FF
+  BorderColor #93C5FD
+  FontSize 12
+}

@@ -1,0 +1,46 @@
+@startuml delivery-paths
+!include state-machine-style.iuml
+title Slop Machine | Delivery paths at a glance
+caption All paths require checks and senior-agent approval of the exact code to publish.
+
+state "Agent review approved\nChecks passed" as Ready
+state DeliveryMode <<choice>>
+state "Push branch + open PR\nVerify remote commit" as PR
+state PRReviewMode <<choice>>
+state "Await human review\nNo active run or slot" as Awaiting <<attention>>
+state HumanDecision <<choice>>
+state "Repair or reconcile\nRecheck + senior review" as Repair
+state "Merge PR\nVerify target commit" as Merge
+state "Direct-main gate\nExpected head + permission" as DirectGate
+state "Fast-forward push main\nVerify remote head" as PushMain
+state "Update task status\nJira Done if ticket linked" as Done
+state "Complete\nCode + task status verified" as Complete <<success>>
+state "Needs attention\nFinal rejection or blocked policy" as Attention <<attention>>
+
+[*] --> Ready
+Ready --> DeliveryMode : delivery mode from task specification
+DeliveryMode --> PR : [pr_human or pr_automatic]
+DeliveryMode --> DirectGate : [direct_main; no PR]
+PR --> PRReviewMode : PR head verified
+PRReviewMode --> Awaiting : [pr_human]
+PRReviewMode --> Merge : [pr_automatic; host rules satisfied]
+PRReviewMode --> Attention : [pr_automatic; host requires human]
+Awaiting --> HumanDecision : authenticated PR/chat response\n/ start new run
+HumanDecision --> Repair : [changes requested]
+HumanDecision --> Merge : [approved; gates current]
+HumanDecision --> Attention : [final rejection or ambiguity]
+Repair --> Ready : new exact snapshot approved
+DirectGate --> PushMain : [main unchanged; final snapshot approved]
+DirectGate --> Repair : main or final snapshot changed
+DirectGate --> Attention : permission or protection denied
+Merge --> Done : merge verified
+PushMain --> Done : main push verified
+Done --> Complete : applicable task/ticket update verified
+Complete --> [*]
+Attention --> [*]
+
+note right of PushMain
+  No PR and no force push.
+  Concurrent tasks serialize main integration.
+end note
+@enduml

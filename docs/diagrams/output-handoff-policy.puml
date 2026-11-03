@@ -1,0 +1,64 @@
+@startuml output-handoff-policy
+!include state-machine-style.iuml
+title Slop Machine | Policy evaluation of agent output and handoffs
+caption Evaluate significant plans, results and role handoffs against the fixed post-preflight task specification.
+
+state "Capture proposed output or handoff\nRole, run, invocation, source and exact artifact\nPlan, scope proposal, review result or context handoff" as Capture
+state "Bind evaluation inputs\nFrozen task spec + project design, code/evidence\nEffective policy bundle, versions + enforcement reach" as Bind
+state "Evaluate scope and requirements\nVersioned rules + semantic checks\nSeparate evaluator error from policy decision" as Evaluate
+state Decision <<choice>>
+state "Record allow decision\nBound to exact input and spec/policy versions\nObjective workflow/permission gates still apply" as Allow
+state "Contain necessary extra work\nStop/fence affected agent execution\nRecord scope boundary and possible side effects" as Contain
+state "Reject off-scope or invalid proposal\nRecord rule, evidence + repairable finding\nStop affected continuation" as Reject
+state "Request clarification\nUncertain scope or contradictory evidence\nStop affected continuation" as Clarify <<attention>>
+state "Policy check unavailable\nDo not authorize protected handoff/action\nBounded retry if safe" as Unavailable <<attention>>
+state "Assess enforcement and side effects\nIntercepted: reject before action\nObserved-only: fence further work; reconcile effects" as Effects
+state "Allowed\nReturn bound decision to caller" as Allowed <<success>>
+state "In-scope correction needed\nReturn policy finding for bounded repair" as Repair <<attention>>
+state "Dependency handoff needed\nReturn confirmed necessary scope expansion" as ScopeBlock <<blocked>>
+state "Needs attention\nClarification, failed check or unknown effects" as Attention <<attention>>
+
+[*] --> Capture
+Capture --> Bind : exact output/handoff captured and source authenticated
+Capture --> Attention : output missing, malformed or attribution invalid
+Bind --> Evaluate : required evidence and fixed spec available
+Bind --> Attention : spec/evidence unavailable or policy binding stale
+Evaluate --> Decision : evaluation completed and recorded
+Evaluate --> Unavailable : evaluator error or unavailable
+Unavailable --> Evaluate : safe retry within deadline and budget
+Unavailable --> Attention : exhausted or unavailable / fail closed
+Decision --> Allow : [in scope and compliant]
+Decision --> Contain : [necessary work outside established scope]
+Decision --> Reject : [off-scope or invalid proposal; not necessary work]
+Decision --> Clarify : [scope or authority uncertain]
+Allow --> Allowed : exact decision recorded; preconditions current
+Allow --> Attention : input/spec changed before acceptance
+Contain --> Effects : further work stopped/fenced; evidence recorded
+Reject --> Effects : proposal rejected; finding recorded
+Clarify --> Effects : question + evidence recorded
+Effects --> ScopeBlock : [necessary extra work; side effects bounded]\nonly FR-10 handoff operations remain permitted
+Effects --> Repair : [rejected proposal; safe in-scope correction possible]\nwithin retry budget
+Effects --> Attention : [uncertain or uncontained side effects,\nclarification required, or no safe repair]
+Allowed --> [*] : return allow
+Repair --> [*] : return repair_required
+ScopeBlock --> [*] : return scope_blocked
+Attention --> [*] : return attention
+
+note right of Bind
+  Agent output cannot rewrite the accepted task spec or policy.
+  A policy result records rule, decision, evidence and action.
+  Evaluation errors never imply allow. Project-specific rules
+  and evaluator configuration are separately versioned JSON.
+end note
+note right of Effects
+  Only an intercepted boundary can block an action beforehand.
+  Observed-only output may already have effects; record that fact,
+  fence further execution and reconcile before any retry.
+  A favorable semantic result cannot bypass objective constraints.
+end note
+note bottom of ScopeBlock
+  Containment allows only narrowly scoped preservation and
+  dependency-ticket operations. The current agent loop cannot
+  implement the newly proposed prerequisite itself.
+end note
+@enduml

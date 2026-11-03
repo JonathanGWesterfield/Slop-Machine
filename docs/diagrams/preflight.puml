@@ -1,0 +1,92 @@
+@startuml preflight
+!include state-machine-style.iuml
+title Slop Machine | Preflight and ticket reconciliation
+
+state "Refresh task inputs\nRe-fetch Jira ticket if linked; design version,\ntarget branch/commit, dependencies" as Refresh
+state "Resolve authoritative project guidance\nLocate configured design and instructions\nCheck authority and consistency with task intent" as Guidance
+state "Assess task relevance\nMap each acceptance criterion\nto current code and evidence" as Assess
+state Decision <<choice>>
+state "Correct stale ticket\nRecord old/new facts and rationale\nPreserve original intent" as Correct
+state "Mark Jira ticket unneeded\nRecord explanation + evidence\nClose and verify resolution" as Close
+state "Close prompt-only task without code\nRecord explanation + evidence\nVerify internal task status" as PromptClose
+state "Verify prerequisites\nConfirm outcome exists in target code" as Dependency
+state "Reconcile saved branch\nCheck prior handoff against current base\nRecord conflicts as new repair context" as Restore
+state "Freeze task specification\nScope, acceptance criteria, context,\nconfiguration and policy versions" as Spec
+state "Reconcile pending PR/response or delivery intent\nBind human reply to actor, task, PR + head\nCompare current spec, senior review, checks and remote code" as ResumeCheck
+state "Ready for implementation" as Ready <<success>>
+state "Resume delivery/recovery\nPrior PR or direct-push intent identified" as ResumePublication <<success>>
+state "Jira ticket closed as unneeded\nNo implementation needed" as NotNeeded <<success>>
+state "Prompt task closed as unneeded\nNo implementation needed" as PromptNotNeeded <<success>>
+state "Clarification required\nDo not rewrite intent or guess" as Clarify <<attention>>
+state "Dependency blocked\nCreate/link prerequisite and hand off" as ScopeBlock <<blocked>>
+
+[*] --> Refresh
+Refresh --> Guidance : resolved repository + current inputs captured
+Guidance --> Assess : guidance identified; authority/intent clear
+Guidance --> Clarify : required design missing or inaccessible\n/ request project guidance; do not guess
+Guidance --> Clarify : design contradicts task; intended authority unclear\n/ record conflict and request resolution
+Assess --> Decision : assessment recorded
+Decision --> Correct : [incorrect/stale; same intended task]
+Correct --> Refresh : update confirmed / reassess
+Correct --> Refresh : revision conflict / reread; bounded retries
+Decision --> Close : [Jira-backed; unnecessary or already satisfied;\nno pending delivery] and evidence sufficient
+Decision --> PromptClose : [prompt-only; unnecessary or already satisfied;\nno pending delivery] and evidence sufficient
+Decision --> Dependency : [human response or delivery recovery pending;\ncurrent task/design/ticket intent reconciled]\n/ verify prerequisites and saved branch before resumption
+Close --> NotNeeded : explanation + resolution confirmed
+PromptClose --> PromptNotNeeded : explanation + task status confirmed
+Close --> Refresh : relevant inputs changed / reassess
+Decision --> Clarify : [uncertain or conflicting]
+Decision --> Dependency : [valid and still needed]
+Decision --> ScopeBlock : [necessary prerequisite outside scope]
+Dependency --> ScopeBlock : unresolved / not available in code
+Dependency --> Restore : satisfied; previous work exists
+Dependency --> Spec : satisfied; no previous work
+Restore --> Spec : saved work assessed; repair needs recorded
+Restore --> Clarify : unsafe or ambiguous reconciliation
+Spec --> Ready : [new work; no pending delivery]\npolicy + freshness checks pass
+Spec --> ResumeCheck : [pending human response or delivery recovery]\ncurrent spec + policy frozen
+Spec --> Refresh : source revisions materially changed
+ResumeCheck --> ResumePublication : [approved response or delivery recovery;\ncurrent spec, PR/head, senior approval + checks match]\nor target publication verified and status pending
+ResumeCheck --> Ready : [in-scope feedback or stale approval/checks]\n/ preserve response and old work as repair context;
+ResumeCheck --> ScopeBlock : confirmed necessary work outside scope
+ResumeCheck --> Clarify : ambiguous actor, PR, scope, review binding\nor contradictory fresh inputs
+ResumeCheck --> Refresh : ticket/design/target changed during check\n/ reassess before any merge or repair
+Ready --> [*] : return ready
+ResumePublication --> [*] : return publication_resume
+NotNeeded --> [*] : return no_work
+PromptNotNeeded --> [*] : return no_work
+Clarify --> [*] : return attention
+ScopeBlock --> [*] : return scope_blocked
+
+note right of Assess
+  Read the target project's design, not only
+  Slop Machine's design or an agent summary.
+  Failure to reproduce is not proof of no work.
+  Published code awaiting completion is not an unnecessary ticket.
+  Preflight role and closure review threshold: TBD.
+end note
+note left of Guidance
+  A demonstrably stale ticket with unchanged intent can
+  still reach Correct after assessment. Conflicting intent
+  cannot be silently resolved by rewriting requirements.
+  A no-design exception policy has not been selected.
+end note
+note right of ResumeCheck
+  New-run preflight precedes every human response and recovery action.
+  Corrections and conflicting intent take priority over resumption.
+  A response requesting changes enters implementation with the current
+  spec and feedback; it needs new checks, senior review and human review.
+  A stale old approval never authorizes merge of a new PR head/spec.
+end note
+note right of Correct
+  Corrections cannot enlarge the task's scope.
+  New required work goes to a prerequisite ticket.
+  Mutations use policy checks and reconciliation;
+  unconfirmed updates never count as success.
+end note
+note bottom of Spec
+  Fresh implementation/reviewer sessions are created lazily after readiness.
+  The specification and evidence survive replacement of agent sessions.
+  Operational failures follow operation-guardrails.puml; exhausted recovery returns attention.
+end note
+@enduml

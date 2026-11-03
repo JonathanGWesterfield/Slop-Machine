@@ -1,0 +1,117 @@
+@startuml publication
+!include state-machine-style.iuml
+title Slop Machine | Configurable publication and completion
+caption Delivery mode is explicit: PR with human review, PR without it, or direct push to main.
+
+state Entry <<choice>>
+state "Reconcile interrupted delivery\nRead remote PR/main and task status\nMatch saved operation + approved snapshot" as Recover
+state "Verify publication prerequisites\nCurrent task/spec/policy; internally approved snapshot\nRequired checks and branch/base identity" as Verify
+state DeliveryMode <<choice>>
+state "Push reviewed branch\nVerify exact remote commit\nReconcile retries by operation ID" as Push
+state "Create or update PR\nVerify PR identity and head commit" as PR
+state ReviewTracking <<choice>>
+state "Update Jira: PR published\nLink PR, commit, checks and agent review\nVerify configured status + ticket update" as InReview
+state "Update prompt task: PR published\nLink PR, commit, checks and agent review\nVerify task update" as PromptInReview
+state ReviewMode <<choice>>
+state "Request human review\nPR review or task chat prompt\nInclude PR and exact commit" as Request
+state "Await human decision\nEnd run; release slot and agent sessions" as Awaiting <<attention>>
+state "Ingest human response\nAuthenticate actor; record PR/chat source\nBind decision + feedback to PR head" as HumanResponse
+state HumanDecision <<choice>>
+state "Validate renewed human approval\nCurrent task spec/policy, PR head + base\nSenior approval + required checks bind exact snapshot" as ResumeGate
+state "Return actionable feedback\nIn-scope repair; invalidate old approvals\nRevalidate; repeat configured reviews" as Repair <<attention>>
+state "PR completion gate\nHuman approval if configured\nCurrent head, checks, policy and base" as Gate
+state "Reconcile branch with current base\nChanged snapshot requires new checks\nand configured reviews" as Rebase
+state "Merge PR or verify external merge\nConfirm exact target and merged commit" as Merge
+state "Direct-main gate\nAgent-approved snapshot, current main head\nChecks, policy and push permission" as DirectGate
+state "Push directly to main\nFast-forward only; no force push\nVerify exact remote main commit" as DirectPush
+state CompletionTarget <<choice>>
+state "Update Jira: Done\nLink published commit + PR if any + evidence\nVerify status and ticket revision" as Done
+state "Mark prompt-only task complete\nRecord published commit + review evidence\nVerify internal task status" as PromptDone
+state "Task complete\nTarget branch + completion verified\nJira Done when linked" as Complete <<success>>
+state "Needs attention\nFinal rejection, ambiguity, or failed recovery" as Attention <<attention>>
+state "Scope blocker\nPreserve work and create/link prerequisite" as ScopeBlock <<blocked>>
+
+[*] --> Entry
+Entry --> Verify : [new internally approved code]
+Entry --> HumanResponse : [human response for published PR]
+Entry --> Recover : [delivery recovery pending]
+Recover --> CompletionTarget : target branch update verified; completion pending
+Recover --> Verify : no remote publication; approved snapshot still current
+Recover --> Attention : external result remains ambiguous
+Verify --> DeliveryMode : snapshot and permissions current
+Verify --> Repair : code/base changed
+Verify --> Attention : scope/spec/policy requires reassessment
+DeliveryMode --> Push : [pr_human or pr_automatic]
+DeliveryMode --> DirectGate : [direct_main]
+Push --> PR : remote head verified
+PR --> ReviewTracking : PR head verified
+ReviewTracking --> InReview : [Jira ticket linked]
+ReviewTracking --> PromptInReview : [prompt-only; no ticket]
+InReview --> ReviewMode : Jira update confirmed
+PromptInReview --> ReviewMode : task update confirmed
+ReviewMode --> Request : [pr_human]
+ReviewMode --> Gate : [pr_automatic]
+Request --> Awaiting : review request recorded
+HumanResponse --> HumanDecision : actor, task, PR and head verified
+HumanResponse --> Attention : identity or binding ambiguous
+HumanDecision --> Repair : [changes requested or repairable denial]
+HumanDecision --> ResumeGate : [approved]
+HumanDecision --> ScopeBlock : [confirmed necessary scope expansion]
+HumanDecision --> Attention : [final rejection or unresolved decision]
+ResumeGate --> Gate : all identities, approval and checks current
+ResumeGate --> Repair : code/spec/checks or senior approval stale\n/ invalidate old approvals; renew review
+ResumeGate --> Attention : identity or policy binding ambiguous
+Gate --> Merge : required approvals, checks and target current
+Gate --> Rebase : base moved / reconcile
+Gate --> Awaiting : [pr_human; platform approval missing] / re-request
+Gate --> Attention : [pr_automatic; host requires human]\nor policy denial/conflict
+Rebase --> Repair : new snapshot / invalidate approvals
+Merge --> CompletionTarget : remote merge verified
+DirectGate --> DirectPush : expected main head + policy current
+DirectGate --> Repair : main moved / revalidate final snapshot
+DirectGate --> Repair : integration changed reviewed snapshot
+DirectGate --> Attention : push permission or protection denied
+DirectPush --> CompletionTarget : remote main head verified
+DirectPush --> Repair : main moved before push / revalidate
+DirectPush --> Attention : remote effect uncertain after recovery
+CompletionTarget --> Done : [Jira ticket linked]
+CompletionTarget --> PromptDone : [prompt-only; no ticket]
+Done --> Complete : Jira Done verified
+Done --> Attention : Jira update unconfirmed after recovery
+PromptDone --> Complete : task completion verified
+PromptDone --> Attention : task update unconfirmed after recovery
+Awaiting --> [*] : return awaiting_review
+Complete --> [*] : return complete
+Repair --> [*] : return repair_required
+Attention --> [*] : return attention
+ScopeBlock --> [*] : return scope_blocked
+
+note right of HumanResponse
+  PR comments and task chat replies are normalized
+  into one observable human-review record.
+  A chat approval does not bypass a PR host's
+  required approval rules.
+end note
+note right of ResumeGate
+  Human-response intake occurs in a NEW run after preflight.
+  Preflight routes in-scope feedback to implementation first.
+  This gate independently rechecks the current task specification,
+  reviewed snapshot and PR head immediately before merge.
+  After repair, publication updates the PR and requests human review again.
+end note
+note right of DirectGate
+  Concurrent tasks serialize integration with main.
+  If main changes, repeat validation and senior review
+  for the exact code that would be pushed.
+  No implicit fallback to a PR or force push.
+end note
+note bottom of Awaiting
+  The task remains pending. The next authenticated human response
+  queues a NEW run, which repeats ticket/code preflight.
+end note
+note bottom of Done
+  Branch push, PR, merge, direct push and Jira mutations use operation-guardrails.puml.
+  Reconcile uncertain remote outcomes before retrying.
+  Failure to update Jira leaves the task incomplete and recoverable.
+end note
+@enduml

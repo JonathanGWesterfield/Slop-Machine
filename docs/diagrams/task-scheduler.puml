@@ -1,0 +1,108 @@
+@startuml task-scheduler
+!include state-machine-style.iuml
+title Slop Machine | Scheduler admission and per-run volume startup (FR-01 through FR-03, FR-06 / FR-07)
+caption A claimed run receives a verified Docker volume/full clone and a credential-ready container before Jira work-start or preflight.
+
+state "Validate scheduler settings\nConfigured limit must be 1, 2 or 3\nResolve Jira backlog/project settings" as Config
+state "Task intake\nJira ticket, user prompt or existing task\nSee task-intake.puml" as Intake
+state "Wait for new input\nNo task or slot held" as WaitInput
+state "Queued\nPersist status; visible to user\nNo execution slot held" as Queue
+state Eligibility <<choice>>
+state "Wait for capacity\nVisible queued status; no slot" as WaitCapacity
+state "Wait for prerequisite\nNo slot; task remains blocked" as WaitDependency <<blocked>>
+state "Wait for old run volume recovery\nNo slot; task remains blocked" as WaitWorkspace <<blocked>>
+state "Existing active task\nCoalesce duplicate pickup" as Existing
+state "Check selected access configuration\nAPI or supported subscription; no token fetched\nSee access-readiness.puml: preclaim_check" as Access
+state "Resolve configured target repository\nVerify mapping, remote + target snapshot\nShow project/repository before execution\nSee project-workspace.puml: resolve_for_admission" as Project
+state "Atomically claim task + reserve slot\nCheck task/config/target revisions, readiness, active count\nExclude unreconciled old volume; create new run ID" as Claim
+state "Create and verify new run volume + full clone\nSystem invokes project-workspace.puml: create_for_run\nTask-owned branch + exclusive volume" as Workspace
+state "Start task container\nFetch current selected credential from manager\nVerify agent runtime readiness\nSee access-readiness.puml: worker_start" as WorkerStart
+state StartTracking <<choice>>
+state "Update Jira: work started\nConfigured active status or progress update\nVerify ticket revision + update" as JiraStart
+state "Mark prompt-only task running\nVerify internal status update" as PromptStart
+state "Reconcile Jira start update\nRead current ticket; bounded retry" as Reconcile
+state "Stop/fence startup container; finalize volume\nReconcile credential, Git + Jira start effects\nInvoke project-workspace.puml: end_run if created\nRelease claim + slot after safe cleanup" as Release
+state "Startup cleanup incomplete\nKeep claim/slot; expose recovery action" as CleanupPending <<attention>>
+state "Dispatch claimed run to preflight\nAttach secret-free access, repository + volume refs\nTask, source, project + ticket if linked" as Dispatch <<success>>
+state "Needs attention\nInvalid config, volume or start update" as Attention <<attention>>
+state "Cancelled before dispatch" as Cancelled <<attention>>
+
+[*] --> Config
+Config --> Intake : settings valid
+Config --> Attention : invalid limit or missing required config
+Intake --> Queue : actionable task + tracking record saved
+Intake --> WaitInput : no eligible candidate
+Intake --> Attention : intake failed
+Intake --> Cancelled : prompt cancelled
+WaitInput --> Intake : Jira backlog change or new prompt
+Queue --> Eligibility : admission check
+Queue --> Cancelled : task cancelled
+Eligibility --> WaitCapacity : active runs >= configured limit
+Eligibility --> WaitDependency : prerequisite unresolved
+Eligibility --> WaitWorkspace : old task volume not safely reconciled
+Eligibility --> Existing : same task/ticket already active
+Eligibility --> Access : eligible and capacity available
+WaitCapacity --> Eligibility : slot released or valid limit raised
+WaitDependency --> Eligibility : dependency signal received
+WaitWorkspace --> Eligibility : old volume reconciled; new run permitted
+Access --> Project : selected mode/config supported; evidence recorded
+Access --> Attention : setup/auth/limit failure visible; no run started
+Project --> Claim : repository identity + target verified;\nproject visible to user
+Project --> Attention : mapping, access or target invalid; no run started
+Claim --> Workspace : claim + slot + run ID persisted
+Claim --> Queue : task revision or claim conflict / refresh
+Claim --> Access : access evidence expired or config changed\n/ recheck before claiming
+Claim --> Project : repository/target evidence stale\n/ recheck before claiming
+Workspace --> WorkerStart : new volume + clone/branch/HEAD verified
+Workspace --> Release : creation or verification failed/ambiguous
+Workspace --> Release : cancellation requested / reconcile creation effect;\noutcome = cancelled
+WorkerStart --> StartTracking : current credential fetched; selected runtime ready
+WorkerStart --> Release : credential startup failed or cancelled\n/ reconcile container and volume; outcome recorded
+StartTracking --> JiraStart : [Jira ticket linked]
+StartTracking --> PromptStart : [prompt-only; no ticket]
+StartTracking --> Release : cancellation requested / outcome = cancelled
+JiraStart --> Dispatch : Jira start update confirmed
+JiraStart --> Reconcile : update failed or result ambiguous
+JiraStart --> Release : cancellation requested / reconcile update;\noutcome = cancelled
+Reconcile --> JiraStart : retry permitted; effect not applied
+Reconcile --> Dispatch : start update already confirmed
+Reconcile --> Release : update cannot be confirmed
+Reconcile --> Release : cancellation requested / reconcile update;\noutcome = cancelled
+PromptStart --> Dispatch : internal running status confirmed
+PromptStart --> Release : status update unconfirmed
+PromptStart --> Release : cancellation requested / outcome = cancelled
+Release --> Attention : [startup failure; cleanup + outcome confirmed]\nclaim/slot released; failure recorded
+Release --> Cancelled : [cancel requested; cleanup + outcome confirmed]\nclaim/slot released; cancellation recorded
+Release --> CleanupPending : volume/ownership cannot be retired safely
+CleanupPending --> Release : bounded recovery restores certainty
+Dispatch --> [*] : return dispatched
+Existing --> [*] : return existing task; no new run
+Attention --> [*] : return attention
+Cancelled --> [*] : return cancelled
+
+note right of Claim
+  Admission checks and slot reservation are one
+  serialized decision. Active runs never exceed 3.
+  One task's repair iterations use its existing slot.
+  Release happens only after its executor stops/fences.
+end note
+note right of Workspace
+  The coordinator/repository adapter creates the volume and clone.
+  Agents receive the verified mount; they do not choose isolation.
+  Even a run later closed in preflight has a volume.
+  No Jira work-start update occurs until creation and
+  container credential startup are confirmed.
+  A new run after PR feedback or prerequisite resolution gets
+  a new volume/clone after the old run is reconciled.
+end note
+note bottom of Project
+  Pre-claim checks hold no execution slot and fetch no secret.
+  Claim revalidates their evidence atomically with capacity and ownership.
+  The task container pulls the current selected credential at startup.
+  Later auth or repository changes stop affected work for fresh checks.
+end note
+note bottom of Queue
+  Jira and prompt tasks share the same queue and limit.
+  Waiting and running statuses are observable.
+end note
+@enduml

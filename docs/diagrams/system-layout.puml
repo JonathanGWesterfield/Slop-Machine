@@ -1,0 +1,99 @@
+@startuml system-layout
+title Slop Machine | Single-server coding assistant
+caption Coordinator, Docker Engine, PostgreSQL, credentials, artifacts, and per-run volumes share one server; 1-3 task containers may overlap.
+
+left to right direction
+skinparam backgroundColor #F8FAFC
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 13
+skinparam componentStyle rectangle
+skinparam linetype ortho
+skinparam ArrowColor #475569
+skinparam ArrowFontSize 11
+skinparam packageBackgroundColor #FFFFFF
+skinparam packageBorderColor #64748B
+
+actor "User / human reviewer" as User
+cloud "Jira" as Jira
+cloud "Git + PR host" as GitHost
+cloud "OpenAI\nAPI or supported subscription models" as OpenAI
+
+node "One server | deployment boundary" as Host {
+package "Coordinator | long-lived control plane" as Coordinator {
+  component "Intake + project catalog" as Intake
+  component "Scheduler + LangGraph\nworkflow / 1-3 run slots" as Workflow
+  component "Access provider\nsign-in + single refresh owner" as AuthOwner
+  component "Replaceable agent/runtime\nand credential-store adapters" as Adapters
+  component "Worker provisioner\nstart / stop / fence" as Provisioner
+  component "Operation gateway\npolicy + Git/Jira effects" as Gateway
+  component "Journal + observability\nevents, traces, metrics, usage" as Journal
+}
+
+database "PostgreSQL | authoritative journal\ncheckpoints + usage on persistent disk" as JournalDB
+folder "Persistent artifact storage\nprompts, transcripts, evidence" as ArtifactStore
+
+package "OpenBao | preferred self-hosted credential manager" as OpenBao {
+  database "Renewable login\ncentral owner only" as Renewable
+  database "Current access credential\nworker read-only path" as CurrentAccess
+}
+
+component "Docker Engine\nstart / stop / fence task containers" as ContainerEngine
+node "Worker capacity | 1-3 concurrent task runs" as Capacity {
+  node "Task-run container | repeat per run" as TaskContainer {
+    component "Agent runtime\nimplementer + reviewer sessions" as AgentRuntime
+    component "OpenBao reader\nrun-bound machine identity" as CredentialReader
+    component "Code + test tools" as CodeTools
+  }
+  folder "Persistent Docker volume per run\nfull repository clone + task branch" as RunVolume
+}
+}
+
+component "Terraform | optional\nprovision durable infrastructure" as Terraform
+
+User --> Intake : prompt / review response
+Jira --> Intake : eligible ticket
+User --> AuthOwner : ChatGPT sign-in
+Workflow --> Provisioner : claim + dispatch
+Workflow --> Adapters : role/session policy
+Adapters --> AgentRuntime : selected runtime contract
+AuthOwner --> Renewable : retain + update
+AuthOwner --> CurrentAccess : publish usable access credential
+Provisioner --> ContainerEngine : start / stop + run identity
+ContainerEngine --> TaskContainer : launch / fence
+CredentialReader --> CurrentAccess : pull current selected credential\nat every container start
+AgentRuntime --> OpenAI : model turns
+AgentRuntime --> Workflow : proposed actions / handoffs
+Gateway --> CodeTools : authorized tool operations
+CodeTools --> RunVolume : edit / test
+Provisioner --> RunVolume : create / mount / inspect / retire
+TaskContainer --> Workflow : typed results + usage
+Workflow --> Journal : transitions + evidence
+Journal --> JournalDB : durable records / checkpoints
+Journal --> ArtifactStore : large evidence by immutable ID
+Gateway --> Jira : task state / dependencies
+Gateway --> GitHost : branch / PR / publication
+Workflow --> Gateway : authorized effects
+GitHost --> User : human PR review
+Terraform ..> JournalDB
+Terraform ..> ArtifactStore
+Terraform ..> OpenBao
+Terraform ..> ContainerEngine
+
+note bottom of JournalDB
+  Persistent host storage survives task-container
+  removal and server shutdown. Backup/export policy
+  for host or disk loss is a separate decision.
+end note
+
+note bottom of CurrentAccess
+  Token compatibility, expiry handling,
+  and subscription eligibility require proof.
+  Workers never pull auth.json.
+end note
+
+note bottom of TaskContainer
+  Agent credential isolation from arbitrary
+  repository code remains a P0 decision.
+end note
+@enduml

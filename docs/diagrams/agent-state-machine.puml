@@ -1,0 +1,120 @@
+@startuml agent-state-machine
+!include state-machine-style.iuml
+title Slop Machine | Task lifecycle across runs
+caption Delivery mode selects PR with human review, PR without it, or guarded direct push to main. Restart entry is delegated to process-restart-recovery.puml.
+
+state "Task scheduler\nIntake, claim, volume/clone, credential-ready container, start update\nSee task-intake.puml and task-scheduler.puml" as Scheduler
+state "Executing task run" as Running {
+  state "Preflight\nTicket + design + current code\nSee preflight.puml" as Preflight
+  state "Implement / validate / review\nSee implementation-review.puml" as Work
+  state "Configured delivery\nPR or direct main push\nSee publication.puml" as Publish
+  state "Dependency handoff\nPreserve code + create/link ticket\nSee dependency-handoff.puml" as Handoff
+  [*] --> Preflight
+  Preflight --> Work : ready + prerequisites verified;\n[no pending delivery response/recovery]
+  Preflight --> Publish : [publication_resume];\ncurrent task + remote state rechecked
+  Work --> Publish : approved exact snapshot\nand required checks passed
+  Preflight --> Handoff : necessary work outside scope
+  Work --> Handoff : necessary work outside scope
+  Work --> Preflight : workspace inputs or target changed\n/ recheck before code assignment
+  Publish --> Work : code/base changed or\nnew in-scope review feedback
+  Publish --> Handoff : confirmed necessary scope expansion
+}
+state "Close role sessions\nAll outcomes; stop/fence every executor\nSee role-session.puml: end_run" as CloseSessions
+state "Retire or retain run volume\nSystem verifies safe removal or records recovery block\nSee project-workspace.puml: end_run" as CloseWorkspace
+state "Synchronize task/Jira outcome\nVerify stage updates or report attention/cancellation\nSee run-outcome-tracking.puml" as OutcomeSync
+state "Close run\nPersist outcome + volume recovery references\nRelease active run lease and execution slot" as CloseRun
+state Outcome <<choice>>
+state "Awaiting human PR review\nNo run, agents, or slot held" as ReviewPending
+state "Complete\nTarget branch updated; task status verified\nJira Done if ticket linked" as Complete <<success>>
+state "Closed without code\nJira ticket or prompt task marked unneeded" as Unnecessary <<success>>
+state "Blocked on prerequisite\nOld run ended; branch preserved" as Blocked <<blocked>>
+state "Needs attention\nClarification, policy, budget,\nor incomplete recovery" as Attention <<attention>>
+state "Cancelled\nPartial effects remain recorded" as Cancelled <<attention>>
+
+[*] --> Scheduler
+Scheduler --> Running : repository/volume clone + current credential verified;\nrun claimed, slot held, task start update verified
+Scheduler --> Attention : intake, config, or start update failure
+Scheduler --> Cancelled : cancel before dispatch
+Preflight --> CloseSessions : unneeded explanation + applicable\ntask/ticket closure confirmed / outcome = no_work
+Preflight --> CloseSessions : unresolved evidence\n/ outcome = attention
+Work --> CloseSessions : session/workspace/repair needs attention\n/ outcome = attention
+Publish --> CloseSessions : [pr_human] PR linked + human\nreview requested / outcome = awaiting_review
+Publish --> CloseSessions : PR merged or direct main push verified;\ntask complete / outcome = complete
+Publish --> CloseSessions : final human rejection or unresolved review\n/ outcome = attention
+Handoff --> CloseSessions : handoff fully confirmed\n/ outcome = dependency_blocked
+Handoff --> CloseSessions : recovery cannot finish\n/ outcome = attention
+Running --> CloseSessions : unresolvable policy block, exhausted budget,\nor unrecoverable operation / outcome = attention
+Running --> CloseSessions : cancellation requested\n/ outcome = cancelled
+CloseSessions --> CloseWorkspace : sessions_closed; all executors stopped/fenced
+CloseWorkspace --> OutcomeSync : volume_retired or safely retained;\nrecord any task-owned recovery block
+OutcomeSync --> CloseRun : tracking_synced / preserve requested outcome
+OutcomeSync --> CloseRun : tracking_pending / outcome = attention;\nrecord Jira sync failure and recovery action
+CloseRun --> Outcome : outcome persisted; claims + slot released
+Outcome --> ReviewPending : [awaiting_review]
+Outcome --> Complete : [complete]
+Outcome --> Unnecessary : [no_work]
+Outcome --> Blocked : [dependency_blocked]
+Outcome --> Attention : [attention]
+Outcome --> Cancelled : [cancelled]
+Blocked --> [*]
+Attention --> [*]
+ReviewPending --> Scheduler : authenticated PR review or task chat reply\n/ record decision; enqueue NEW run
+Complete --> [*]
+Unnecessary --> [*]
+Cancelled --> [*]
+
+note right of Scheduler
+  Jira ticket retrieval and prompt clarification
+  are detailed in task-intake.puml.
+  Queue admission, the 1-3 limit, atomic claim,
+  container credential pull and verified work-start
+  update are detailed
+  in task-scheduler.puml.
+  On process restart, process-restart-recovery.puml
+  runs before dispatch. It may restore a waiting task or
+  resume an active run at its verified saved stage.
+end note
+note right of ReviewPending
+  Only the pr_human mode enters this state.
+  A human response names the task, PR and reviewed commit.
+  Changes requested return to implementation after preflight.
+  Approval permits merge only after freshness and policy checks.
+  Silence never counts as approval.
+end note
+note right of Running
+  Every protected command uses the guardrail and
+  delivery submachine in operation-guardrails.puml.
+  JSON assignments/results/events are journaled.
+  Log messages, handoffs, tools, policy decisions,
+  model identity, token usage, and state revisions.
+  Operational retries stay within the same operation;
+  they do not restart this whole task run.
+end note
+note right of CloseSessions
+  Cleanup failure stays visible here and retains the slot.
+  Retry/fencing is detailed in role-session.puml.
+  No-code runs safely close without creating role sessions.
+end note
+note right of OutcomeSync
+  A failed Jira outcome update is visible in the task record.
+  Cleanup still releases a fenced run's slot after persisting
+  an attention outcome; no false Jira success is reported.
+end note
+note right of CloseWorkspace
+  Clean runs can remove the local checkout and keep branch history.
+  Dirty work is retained with a complete recovery manifest.
+  A retained task volume blocks a new run until reconciled.
+  Uncertain cleanup keeps the claim/slot until reconciled.
+end note
+note right of Blocked
+  No agent waits here and no slot is retained.
+  The prerequisite is a separate scheduled task.
+  Ticket closure alone does not prove its fix landed.
+  Resolution may queue a NEW run at the top.
+  The next run repeats preflight and uses new sessions.
+end note
+legend bottom
+  Green: successful terminal outcome | Amber: review wait/attention/cancellation | Red: dependency block
+  Labels describe events and guards. Only the workflow changes authoritative state.
+endlegend
+@enduml

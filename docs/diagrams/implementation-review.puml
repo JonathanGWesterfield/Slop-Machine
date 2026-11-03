@@ -1,0 +1,85 @@
+@startuml implementation-review
+!include state-machine-style.iuml
+title Slop Machine | Implementation, validation and senior review
+
+state "Verify mounted clone before code\nSee project-workspace.puml: verify_for_code\nAccepted spec; current or reconciled saved code" as Prepare
+state "Select implementer session\nSee role-session.puml: select_for_pass\nrole = implementer; explicit task + feedback" as ISession
+state "Implement / repair\nBounded assignment" as Implement
+state "Capture immutable candidate\nCode snapshot + criterion mapping\nFinding responses + limitations" as Snapshot
+state "Run configured validation\nBind results to candidate snapshot" as Validate
+state "Select reviewer session\nSee role-session.puml: select_for_pass\nrole = reviewer; original spec, design, code, checks" as RSession
+state "Senior engineering review\nCorrectness, scope, design alignment\nEvidence and unresolved findings" as Review
+state "Evaluate significant agent output\nPlans, completion result + reviewer findings\nSee output-handoff-policy.puml" as OutputPolicy
+state ReviewOutcome <<choice>>
+state "Record actionable feedback\nStable finding IDs + evidence\nNo silent requirement changes" as Feedback
+state "Repair gate\nBudget + scope + progress checks" as RepairGate
+state "Final approval gate\nExact snapshot; current spec/policy\nAll required checks + no blocking findings" as Approve
+state "Ready for publication" as Ready <<success>>
+state "Scope blocker\nPropose separate bounded work" as ScopeBlock <<blocked>>
+state "Needs attention\nClarification, no progress, or limits" as Attention <<attention>>
+state "Repeat preflight\nWorkspace target or task inputs changed" as Recheck <<attention>>
+
+[*] --> Prepare
+Prepare --> ISession : workspace and context ready
+Prepare --> Recheck : return recheck_preflight
+Prepare --> Attention : workspace not safely prepared
+ISession --> Implement : assignment accepted; policy allows
+ISession --> Attention : session selection or context handoff failed
+ISession --> ScopeBlock : outbound handoff found necessary extra work
+Implement --> OutputPolicy : significant plan or completion proposed
+Implement --> Attention : ambiguous requirements
+OutputPolicy --> Implement : allowed intermediate plan/continuation
+OutputPolicy --> Snapshot : allowed implementation completion
+OutputPolicy --> ReviewOutcome : allowed senior review result
+OutputPolicy --> Feedback : [implementer; rejected proposal]\nbounded in-scope correction
+OutputPolicy --> RSession : [reviewer; rejected result]\nbounded corrected review pass
+OutputPolicy --> ScopeBlock : necessary extra work confirmed
+OutputPolicy --> Attention : uncertain scope, policy failure\nor uncontained effects
+Snapshot --> Validate : snapshot complete
+Validate --> RSession : required checks passed
+Validate --> Feedback : application check failed\n/ attach validation evidence
+RSession --> Review : assignment accepted; policy allows
+RSession --> Attention : session selection or context handoff failed
+RSession --> ScopeBlock : outbound handoff found necessary extra work
+Review --> OutputPolicy : structured review result/handoff proposed
+ReviewOutcome --> Feedback : [changes_requested]
+ReviewOutcome --> ScopeBlock : [scope_blocked]
+ReviewOutcome --> Attention : [clarification_required]
+ReviewOutcome --> Approve : [approved]
+Feedback --> RepairGate
+RepairGate --> Prepare : allowed, in scope, progress possible\n/ new repair assignment + iteration
+RepairGate --> ScopeBlock : necessary extra work confirmed
+RepairGate --> Attention : limits exhausted, disputed scope,\nor repeated unresolved failures
+Approve --> Ready : checks and approval match same code/spec
+Approve --> Snapshot : code/evidence changed / invalidate approval
+Approve --> Attention : spec/policy conflict needs reassessment
+Ready --> [*] : return approved snapshot
+ScopeBlock --> [*] : return scope_blocked
+Attention --> [*] : return attention
+Recheck --> [*] : return recheck_preflight
+
+note left of ISession
+  role-session.puml owns fresh/reuse selection,
+  explicit context delivery and session retirement.
+  Lifecycle cleanup invokes its end_run path for both roles.
+  Check failures and review repairs each re-enter selection.
+end note
+note right of Validate
+  A test failure can require code repair.
+  A failed test runner, malformed response, or
+  provider outage is an operational failure:
+  reconcile/retry under operation-guardrails.puml.
+  Never label an infrastructure error a test pass.
+end note
+note right of Review
+  Agents exchange typed JSON handoffs through
+  the workflow; actual messages remain inspectable.
+  Ponytail is configured per role; Caveman optional.
+  Optimization cannot remove necessary evidence.
+end note
+note bottom of RepairGate
+  Budget and cancellation checks apply before EVERY new assignment/check.
+  Policy blocking can interrupt any protected action; it cannot silently pass.
+  Global cancellation and unrecoverable errors return to lifecycle cleanup.
+end note
+@enduml

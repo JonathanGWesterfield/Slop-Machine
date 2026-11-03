@@ -1,0 +1,78 @@
+@startuml host-restart-recovery
+!include state-machine-style.iuml
+title Slop Machine | Host shutdown and startup recovery
+caption Recover ticket/run ownership and the same persistent task volume before normal scheduling resumes.
+
+state "Host starts; dispatch paused\nNo task auto-restart before reconciliation" as Boot
+state "Start durable dependencies\nDocker Engine, PostgreSQL, credential manager\nCheck journal/checkpoint and volume availability" as Services
+state "Establish new coordinator epoch\nReject old-epoch commands; inventory Docker\ncontainers and named volumes" as Own
+state "Load authoritative run records\nTask and Jira ticket IDs, claim/slot, stage\nvolume ID, operation intents, checkpoints" as Load
+state "Join run to volume\nCompare DB ref with Docker ID/labels and\nvolume manifest: task/run/repo/branch" as Match
+state MatchResult <<choice>>
+state "Classify passive tasks\nQueued/waiting/terminal; reconcile\npending Jira outcome sync separately" as Passive
+state "Isolate interrupted active run\nKeep claim/slot and ticket identity\nNo second writer may mount volume" as Isolate
+state "Reconcile interrupted provisioning\nCreation intent exists; prove no worker ever mounted\nConfirm volume absent or incomplete before retry" as Provision
+state "Fence old container and sessions\nConfirm no surviving writer/tool authority" as Fence
+state "Inspect saved full clone\nOrigin, branch, HEAD, status including\nstaged, untracked and ignored task files" as Inspect
+state "Reconcile last effects and checkpoint\nJournal/outbox vs Git, PR, Jira and artifacts\nNo blind replay of pending operation" as Reconcile
+state "Resume SAME run\nStart replacement container with SAME volume\nFetch current credential; fresh role sessions\nContinue at verified LangGraph stage" as Resume <<success>>
+state "Safely end old run\nPreserve volume/branch/evidence as needed\nRecord reason and release fenced slot" as EndRun <<attention>>
+state "Quarantine affected task\nMissing, duplicate or mismatched volume/manifest\nKeep evidence and block automatic pickup" as Quarantine <<attention>>
+state "Preserve orphan volume\nNo authoritative run reference\nReport for operator reconciliation; never auto-mount" as Orphan <<attention>>
+state "Global recovery blocked\nRequired store or coordinator ownership unavailable\nKeep dispatch paused" as GlobalBlock <<attention>>
+state "Classifications committed\nOpen scheduler only for eligible tasks\nBlocked tasks remain visible" as Open <<success>>
+
+[*] --> Boot
+Boot --> Services
+Services --> Own : services and persistent stores readable
+Services --> GlobalBlock : required store unavailable/corrupt
+Own --> Load : single current owner established
+Own --> GlobalBlock : old owner cannot be excluded
+Load --> Match : task/run inventory loaded
+Load --> GlobalBlock : authoritative inventory unreadable
+Match --> MatchResult : compare each relevant run and volume
+MatchResult --> Passive : [no active run or saved workspace required]
+MatchResult --> Isolate : [active run + unique matching volume]
+MatchResult --> Provision : [creation intent; no ready volume]
+MatchResult --> Quarantine : [missing/duplicate/mismatched reference]
+MatchResult --> Orphan : [Docker volume has no DB run reference]
+Provision --> Match : absence proven; recreate SAME reserved volume ID\nfor SAME run and verify clone
+Provision --> Quarantine : worker may have written or effect unknown
+Isolate --> Fence
+Fence --> Inspect : prior writer stopped/fenced
+Fence --> Quarantine : writer still capable of action; retain slot
+Inspect --> Reconcile : clone identity and state captured
+Inspect --> Quarantine : clone missing, corrupt or wrong owner
+Reconcile --> Resume : verified checkpoint; effects classified;\ncurrent inputs/access/budget valid
+Reconcile --> EndRun : no safe continuation, but effects/owner known
+Reconcile --> Quarantine : effect or checkpoint unresolved
+Resume --> Open : run resumed; claim/slot retained
+EndRun --> Open : closure/retention committed; slot released
+Passive --> Open : passive state and pending sync classified
+Quarantine --> Open : affected task excluded; independent tasks eligible
+Orphan --> Open : orphan excluded; independent tasks eligible
+Open --> [*]
+GlobalBlock --> [*]
+
+note right of Match
+  PostgreSQL maps task ID + run ID + Jira ticket ID to a
+  persisted volume ID. Docker discovery alone must not guess
+  which ticket owns a volume. Orphan volumes are preserved and
+  reported until ownership is reconciled.
+end note
+note right of Boot
+  Worker containers must not have a Docker restart policy
+  that auto-runs them before coordinator reconciliation.
+end note
+note bottom of Resume
+  This is the same run and same code, never a replay of the
+  interrupted model turn or tool call. The replacement worker
+  mounts only after the old writer is fenced. See the generic
+  process-restart-recovery.puml for operation-level decisions.
+end note
+note bottom of GlobalBlock
+  A Docker volume survives ordinary container removal and
+  host reboot on this server. Disk/host loss requires backups
+  and a separate restore design.
+end note
+@enduml

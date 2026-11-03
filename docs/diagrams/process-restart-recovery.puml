@@ -1,0 +1,88 @@
+@startuml process-restart-recovery
+!include state-machine-style.iuml
+title Slop Machine | Process restart recovery (proposal)
+caption Startup classifies every persisted task before its scheduler dispatch is enabled.
+
+state "Start with dispatch paused\nNo new claims or agent assignments" as Boot
+state "Establish coordinator ownership\nDurable epoch/lock; reject old-epoch writes" as Own
+state "Load recovery inventory\nCheckpoints, claims/slots, journal, outbox,\nsessions, volume refs and external intents" as Load
+state Kind <<choice>>
+
+state "Restore passive task\nQueued, waiting or terminal; no live run" as Restore <<success>>
+state "Reconcile pending outcome sync\nNo slot; read Jira/task before retry" as Sync
+state SyncResult <<choice>>
+state "Outcome sync restored\nEffect confirmed or safe retry completed" as SyncDone <<success>>
+state "Quarantine task or sync\nMissing evidence or unresolved effect\nDo not silently reschedule" as Quarantine <<attention>>
+
+state "Isolate interrupted active run\nKeep claim/slot; block task volume" as Isolate
+state "Stop or fence prior executors\nRevoke session/tool authority\nConfirm no surviving volume writer" as Fence
+state Fenced <<choice>>
+state "Reconcile in-flight operations\nCompare intent, checkpoint, journal and\nobserved Git, PR, Jira/provider effects" as Reconcile
+state Effect <<choice>>
+state "Verify run boundary\nVolume/clone, task/spec/config, selected access, budget\nConfirmed effects applied to workflow state" as Verify
+state SafeToResume <<choice>>
+state "Start replacement task container\nMount SAME run volume; keep claim and slot\nFetch current selected credential from manager\nSee access-readiness.puml: replacement_start" as ReplaceWorker
+state "Resume SAME run at saved stage\nFresh sessions + explicit context; new invocation IDs\nRecheck policy before new work" as Resume <<success>>
+state "End interrupted run\nRecord partial/unknown effects and reason\nRetire safe volume or retain dirty manifest\nSync attention/cancellation as needed" as EndRun
+state EndResult <<choice>>
+state "Old run safely closed\nRelease claim/slot; later pickup gets\nNEW run and NEW volume/full clone" as Closed <<attention>>
+state "Recovery blocked\nWriter or cleanup ownership uncertain\nKeep claim/slot; no new executor" as Blocked <<attention>>
+state "Global startup blocked\nStore or coordinator ownership unproven\nNo scheduling" as GlobalBlock <<attention>>
+
+[*] --> Boot
+Boot --> Own
+Own --> Load : single current owner established
+Own --> GlobalBlock : old writer cannot be excluded
+Load --> Kind : inventory readable and consistent enough to classify
+Load --> GlobalBlock : required store unreadable/corrupt
+Kind --> Restore : [queued/waiting/terminal; no pending effect]
+Kind --> Sync : [run ended; outcome sync pending]
+Kind --> Isolate : [claim, run, cleanup or operation in flight]
+Kind --> Quarantine : [record inconsistent/missing evidence]
+Sync --> SyncResult : remote/internal state checked
+SyncResult --> SyncDone : [effect confirmed or safe retry]
+SyncResult --> Quarantine : [effect unresolved]
+Isolate --> Fence
+Fence --> Fenced : prior process/session/lease checked
+Fenced --> Reconcile : [all prior executors stopped/fenced]
+Fenced --> Blocked : [writer could still act]
+Reconcile --> Effect : every pending operation classified
+Effect --> Verify : [effects confirmed or absence proven]
+Effect --> EndRun : [effect still unknown] / no blind replay
+Verify --> SafeToResume : current inputs and boundary assessed
+Verify --> Blocked : volume/clone ownership cannot be established
+SafeToResume --> ReplaceWorker : [consistent checkpoint; valid workspace,\ninputs, selected mode and budget]
+SafeToResume --> EndRun : [stale, unsafe, cancelled or no valid boundary]
+ReplaceWorker --> Resume : current credential + runtime ready;\ncheckpoint and volume/clone still match
+ReplaceWorker --> EndRun : credential or runtime unavailable\nafter bounded recovery; no agent work resumed
+EndRun --> EndResult : cleanup and outcome recorded
+EndResult --> Closed : [safe retirement or recorded retention]
+EndResult --> Blocked : [cleanup/ownership unconfirmed]
+
+Restore --> [*]
+SyncDone --> [*]
+Quarantine --> [*]
+Resume --> [*]
+Closed --> [*]
+Blocked --> [*]
+GlobalBlock --> [*]
+
+note right of Reconcile
+  A timeout or expired lease never proves the prior effect absent.
+  Match stable operation IDs and external evidence before retry.
+  Confirmed effects advance the state; no old tool call is replayed.
+  Jira Done still requires verified target-branch publication.
+end note
+note bottom of Resume
+  Same-run recovery keeps the existing volume, clone and slot. The
+  replacement container fetches a fresh current credential;
+  saved token bytes are never restored. Lost agent sessions are
+  rebuilt from durable context, findings and code snapshot.
+  Resume only at a verified workflow boundary, not mid-command.
+end note
+note bottom of Closed
+  Each task is classified before dispatch opens for it.
+  Other eligible tasks may proceed while one remains blocked.
+  An unfenced writer keeps its slot; a fenced, closed run does not.
+end note
+@enduml

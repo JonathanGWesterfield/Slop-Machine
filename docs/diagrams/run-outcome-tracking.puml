@@ -1,0 +1,54 @@
+@startuml run-outcome-tracking
+!include state-machine-style.iuml
+title Slop Machine | Final task and Jira outcome tracking (FR-01)
+caption Called after all run executors stop; ticket sync can fail without keeping the execution slot occupied.
+
+state "Persist requested run outcome\nReason, code/PR refs, findings, partial effects\nTask/run/ticket identity and expected status" as Record
+state Tracking <<choice>>
+state TicketOutcome <<choice>>
+state "Verify stage-owned Jira update\nDone, unneeded, dependency blocked or PR pending\nMatch ticket revision, status and evidence links" as VerifyExisting
+state "Publish attention or cancellation to Jira\nReason + recovery action; configured status/comment\nCheck ticket revision before mutation" as UpdateTicket
+state "Verify prompt-only internal task outcome\nReason, links and current task revision" as VerifyPrompt
+state "Reconcile uncertain ticket result\nRead current ticket and operation identity\nBounded retry; avoid duplicate comments/transitions" as Reconcile
+state "Outcome synchronized\nTicket or internal status confirmed" as Synced <<success>>
+state "Outcome sync pending\nRecord failed update and recovery action\nDo not claim Jira coordination succeeded" as Pending <<attention>>
+
+[*] --> Record
+Record --> Tracking : requested outcome persisted
+Record --> Pending : durable task outcome cannot be confirmed
+Tracking --> TicketOutcome : [Jira ticket linked]
+Tracking --> VerifyPrompt : [prompt-only; no Jira ticket]
+TicketOutcome --> VerifyExisting : [complete, no_work, dependency_blocked,\nor awaiting_review; stage already updated Jira]
+TicketOutcome --> UpdateTicket : [attention or cancelled]
+VerifyExisting --> Synced : expected ticket state and links verified
+VerifyExisting --> Reconcile : missing, changed or ambiguous ticket state
+UpdateTicket --> Synced : Jira outcome update + revision verified
+UpdateTicket --> Reconcile : update failed, conflicted or effect unknown
+VerifyPrompt --> Synced : internal task status verified
+VerifyPrompt --> Pending : update or verification failed
+Reconcile --> Synced : expected Jira effect found
+Reconcile --> UpdateTicket : [attention/cancelled; safe retry]\nno prior effect; budget remains
+Reconcile --> Pending : mismatch or effect unresolved after recovery
+Synced --> [*] : return tracking_synced
+Pending --> [*] : return tracking_pending
+
+note right of UpdateTicket
+  Jira workflow mapping may use a status transition,
+  a comment, or both. The record must expose the run's
+  resulting state and reason without inventing a Done
+  transition or erasing another person's ticket edit.
+  All mutations pass through operation-guardrails.puml.
+end note
+note right of VerifyExisting
+  This step verifies stage-owned updates; it does not
+  silently repeat a merge, ticket closure or blocked handoff.
+  A mismatch prevents the run from claiming a fully
+  coordinated successful outcome.
+end note
+note bottom of Pending
+  Executors are already stopped/fenced. Persist the unsynced status,
+  operation ID and recovery action, then release the run slot.
+  The lifecycle returns attention while Jira sync is pending.
+  Recovery must reconcile remote effects before retrying.
+end note
+@enduml

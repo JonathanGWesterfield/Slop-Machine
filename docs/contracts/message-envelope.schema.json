@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:slop-machine:message-envelope:0.1.0",
+  "title": "Slop Machine message envelope draft 0.1.0",
+  "description": "Common envelope only. Payload registry, authorization, artifact validation, and domain preconditions must also be checked before execution.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["envelope_version", "message_id", "kind", "type", "type_version", "created_at", "source", "scope", "correlation_id", "payload"],
+  "properties": {
+    "envelope_version": {"const": "0.1.0"},
+    "message_id": {"$ref": "#/$defs/id"},
+    "kind": {"enum": ["command", "result", "event"]},
+    "type": {"type": "string", "pattern": "^sm\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"},
+    "type_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "created_at": {"$ref": "#/$defs/timestamp"},
+    "source": {"$ref": "#/$defs/actor"},
+    "destination": {"$ref": "#/$defs/address"},
+    "scope": {"$ref": "#/$defs/scope"},
+    "correlation_id": {"$ref": "#/$defs/id"},
+    "causation_id": {"$ref": "#/$defs/id"},
+    "in_reply_to": {"$ref": "#/$defs/id"},
+    "operation_id": {"$ref": "#/$defs/id"},
+    "preconditions": {"$ref": "#/$defs/preconditions"},
+    "deadline_at": {"$ref": "#/$defs/timestamp"},
+    "trace": {
+      "type": "object", "additionalProperties": false,
+      "required": ["trace_id", "span_id"],
+      "properties": {
+        "trace_id": {"$ref": "#/$defs/id"},
+        "span_id": {"$ref": "#/$defs/id"},
+        "parent_span_id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "payload": {"type": "object", "description": "Validated separately against the exact registered kind/type/type_version payload contract."},
+    "attachments": {"type": "array", "items": {"$ref": "#/$defs/artifactRef"}},
+    "extensions": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$"},
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"kind": {"const": "command"}}, "required": ["kind"]},
+      "then": {"required": ["destination", "operation_id", "preconditions"]}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "result"}}, "required": ["kind"]},
+      "then": {
+        "required": ["destination", "operation_id", "in_reply_to"],
+        "properties": {
+          "payload": {
+            "required": ["execution_status"],
+            "properties": {"execution_status": {"enum": ["completed", "failed", "cancelled"]}}
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "actor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component", "instance_id"],
+      "properties": {
+        "component": {"$ref": "#/$defs/id"},
+        "instance_id": {"$ref": "#/$defs/id"},
+        "role": {"$ref": "#/$defs/id"},
+        "session_id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "address": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component"],
+      "properties": {
+        "component": {"$ref": "#/$defs/id"},
+        "role": {"$ref": "#/$defs/id"},
+        "session_id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["project_id"],
+      "properties": {
+        "project_id": {"$ref": "#/$defs/id"},
+        "task_id": {"$ref": "#/$defs/id"},
+        "run_id": {"$ref": "#/$defs/id"},
+        "invocation_id": {"$ref": "#/$defs/id"},
+        "stage": {"$ref": "#/$defs/id"},
+        "iteration": {"type": "integer", "minimum": 1}
+      },
+      "dependentRequired": {
+        "run_id": ["task_id"],
+        "invocation_id": ["run_id", "task_id"],
+        "iteration": ["run_id", "task_id"],
+        "stage": ["run_id", "task_id"]
+      }
+    },
+    "preconditions": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "expected_task_revision": {"type": "integer", "minimum": 0},
+        "task_spec_ref": {"$ref": "#/$defs/artifactRef"},
+        "repository_snapshot_ref": {"$ref": "#/$defs/artifactRef"},
+        "ticket_revision": {"$ref": "#/$defs/id"},
+        "policy_bundle_ref": {"$ref": "#/$defs/artifactRef"},
+        "policy_decision_id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "artifactRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_id", "artifact_type", "uri", "media_type", "sha256", "availability"],
+      "properties": {
+        "artifact_id": {"$ref": "#/$defs/id"},
+        "artifact_type": {"$ref": "#/$defs/id"},
+        "uri": {"type": "string", "minLength": 1},
+        "media_type": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "availability": {"enum": ["available", "redacted", "expired", "unavailable"]},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "description": {"type": "string"},
+        "redaction_ref": {"$ref": "#/$defs/id"},
+        "derived_from_artifact_id": {"$ref": "#/$defs/id"}
+      }
+    }
+  }
+}
